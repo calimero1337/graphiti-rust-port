@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: obsidian-mcp-server
+  labels:
+    app: obsidian-mcp-server
+spec:
+  podSelector:
+    matchLabels:
+      app: obsidian-mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow MCP traffic from pods labelled mcp-client=true (e.g. Claude Code).
+    - from:
+        - podSelector:
+            matchLabels:
+              mcp-client: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow DNS resolution so the container can resolve internal hostnames.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

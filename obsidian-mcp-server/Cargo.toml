@@ -1,0 +1,52 @@
+[package]
+name = "obsidian-mcp-server"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server for Obsidian vault operations, written in Rust"
+license = "MIT"
+
+[lib]
+name = "obsidian_mcp_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "obsidian-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+# MCP SDK — official Rust SDK with streamable-HTTP transport
+rmcp = { version = "0.17", features = [
+    "server",
+    "macros",
+    "transport-streamable-http-server-session",
+] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP framework (required by rmcp streamable-HTTP transport)
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Concurrent data structures (for undo stack)
+dashmap = "6"
+
+# Regex (for search and get_workspace_files)
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

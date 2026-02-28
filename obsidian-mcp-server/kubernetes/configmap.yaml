@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: obsidian-mcp-server-config
+  labels:
+    app: obsidian-mcp-server
+data:
+  # Tracing level for the server binary; adjust to "debug" for troubleshooting.
+  RUST_LOG: "obsidian_mcp_server=info"
+  # Maximum file size the server will read, in bytes (default: 10 MB).
+  MAX_FILE_SIZE: "10485760"
+  # Maximum number of undo entries kept per file in memory.
+  # Lower this on memory-constrained nodes (see UndoStack memory-usage note).
+  UNDO_STACK_LIMIT: "100"
