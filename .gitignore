@@ -1,0 +1,33 @@
+# Rust build artifacts
+target/
+Cargo.lock
+*.rlib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Other untracked directories (local development/data)
+.cargo/
+.github/
+business_intelligence_plattform/
+claude-agent-sdk-rs/
+claude-agent-sdk-rust/
+claude-agent-sdk/
+jarvis-workspaces/
+jeannie-workspaces/
+jeannie/
+lower_decks/
+lower-decks-workspaces/
+obsidian-vault/
+prometheus-data/
+pvc-*/
+matrix-postgres/
