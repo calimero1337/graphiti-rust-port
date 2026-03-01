@@ -1,5 +1,10 @@
 //! LLM client abstraction.
 //!
+//! # Implementations
+//! - [`openai::OpenAiClient`] — OpenAI GPT-4o (and variants) via `async-openai`.
+
+pub mod openai;
+//!
 //! Mirrors the Python `graphiti_core.llm_client` module.
 //! Provides a trait for calling language models with structured output support.
 //!

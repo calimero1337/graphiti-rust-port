@@ -8,6 +8,9 @@
 
 use crate::errors::Result;
 
+pub mod openai;
+pub use openai::{OpenAiEmbedder, DEFAULT_MODEL};
+
 /// A vector embedding (f32 components).
 pub type Embedding = Vec<f32>;
 
