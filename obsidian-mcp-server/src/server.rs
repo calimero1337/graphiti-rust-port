@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use rmcp::{
+    ErrorData as McpError,
     ServerHandler,
-    handler::server::tool::Parameters,
+    handler::server::{tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, Content, ServerCapabilities, ServerInfo,
         Implementation,
     },
-    tool, tool_handler,
+    tool, tool_handler, tool_router,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -17,16 +18,16 @@ use crate::vault::{VaultError, VaultFs};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-fn ok(text: impl Into<String>) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(text.into())])
+fn ok(text: impl Into<String>) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![Content::text(text.into())]))
 }
 
-fn err(text: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(text.into())])
+fn tool_err(text: impl Into<String>) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::error(vec![Content::text(text.into())]))
 }
 
-fn vault_err(e: VaultError) -> CallToolResult {
-    err(e.to_string())
+fn vault_err(e: VaultError) -> Result<CallToolResult, McpError> {
+    tool_err(e.to_string())
 }
 
 /// Format file contents with 1-indexed line numbers.
@@ -120,7 +121,7 @@ struct RenameParams {
 #[derive(Clone)]
 pub struct ObsidianMcpServer {
     vault: Arc<VaultFs>,
-    tool_router: rmcp::handler::server::tool::ToolRouter<Self>,
+    tool_router: ToolRouter<Self>,
 }
 
 impl ObsidianMcpServer {
@@ -130,12 +131,15 @@ impl ObsidianMcpServer {
             tool_router: Self::tool_router(),
         }
     }
+}
 
-    // ── Tool implementations ──────────────────────────────────────────────────
+// ─── Tool implementations ────────────────────────────────────────────────────
 
-    /// View: read a file with line numbers or list a directory.
+#[tool_router]
+impl ObsidianMcpServer {
     #[tool(description = "Read file contents (with line numbers) or list directory entries. Paths are relative to the vault root.")]
-    async fn view(&self, Parameters(p): Parameters<ViewParams>) -> CallToolResult {
+    async fn view(&self, params: Parameters<ViewParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(path = %p.path, "view");
 
         let is_dir = match self.vault.is_dir(&p.path).await {
@@ -144,13 +148,11 @@ impl ObsidianMcpServer {
         };
 
         if is_dir {
-            // List directory
             match self.vault.list_dir(&p.path).await {
                 Ok(entries) => ok(entries.join("\n")),
                 Err(e) => vault_err(e),
             }
         } else {
-            // Read file
             let content = match self.vault.read_file(&p.path).await {
                 Ok(c) => c,
                 Err(e) => return vault_err(e),
@@ -158,18 +160,18 @@ impl ObsidianMcpServer {
 
             match p.view_range {
                 None => ok(with_line_numbers(&content)),
-                Some(range) => {
+                Some(ref range) => {
                     let lines: Vec<&str> = content.lines().collect();
                     let total = lines.len() as i64;
 
                     if range.len() != 2 {
-                        return err("view_range must be [start, end] with exactly two elements");
+                        return tool_err("view_range must be [start, end] with exactly two elements");
                     }
                     let start_raw = range[0];
                     let end_raw = range[1];
 
                     let start = if start_raw < 1 {
-                        return err(format!(
+                        return tool_err(format!(
                             "view_range start must be >= 1, got {}",
                             start_raw
                         ));
@@ -180,7 +182,7 @@ impl ObsidianMcpServer {
                     let end = if end_raw == -1 {
                         total as usize
                     } else if end_raw < start_raw {
-                        return err(format!(
+                        return tool_err(format!(
                             "view_range end ({}) must be >= start ({})",
                             end_raw, start_raw
                         ));
@@ -189,7 +191,7 @@ impl ObsidianMcpServer {
                     };
 
                     if start >= lines.len() {
-                        return err(format!(
+                        return tool_err(format!(
                             "view_range start {} exceeds file length ({} lines)",
                             start_raw,
                             lines.len()
@@ -209,9 +211,9 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// Create: write a new file (errors if it already exists).
     #[tool(description = "Create a new file in the vault. Fails if the file already exists. Use str_replace to modify existing files.")]
-    async fn create(&self, Parameters(p): Parameters<CreateParams>) -> CallToolResult {
+    async fn create(&self, params: Parameters<CreateParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(path = %p.path, "create");
         match self.vault.create_file(&p.path, &p.file_text).await {
             Ok(()) => ok(format!("Created '{}'", p.path)),
@@ -219,13 +221,13 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// str_replace: replace exactly one occurrence of `old_str` with `new_str`.
     #[tool(description = "Replace exact text in a file. old_str must match exactly one location. Saves the previous version for undo_edit.")]
-    async fn str_replace(&self, Parameters(p): Parameters<StrReplaceParams>) -> CallToolResult {
+    async fn str_replace(&self, params: Parameters<StrReplaceParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(path = %p.path, "str_replace");
 
         if p.old_str.is_empty() {
-            return err("old_str must not be empty");
+            return tool_err("old_str must not be empty");
         }
 
         let content = match self.vault.read_file(&p.path).await {
@@ -241,8 +243,6 @@ impl ObsidianMcpServer {
             }),
             1 => {
                 let new_content = content.replacen(&p.old_str[..], &p.new_str, 1);
-                // Pass the already-read content as the undo snapshot to avoid
-                // a redundant re-read and its TOCTOU window inside write_file.
                 match self.vault.write_file_with_undo(&p.path, content, new_content).await {
                     Ok(()) => ok(format!("Replaced text in '{}'", p.path)),
                     Err(e) => vault_err(e),
@@ -255,9 +255,9 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// insert: insert text at a given line number.
     #[tool(description = "Insert text at a specific line number. insert_line=0 inserts at the beginning; insert_line=<line count> appends at the end.")]
-    async fn insert(&self, Parameters(p): Parameters<InsertParams>) -> CallToolResult {
+    async fn insert(&self, params: Parameters<InsertParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(path = %p.path, insert_line = p.insert_line, "insert");
 
         let content = match self.vault.read_file(&p.path).await {
@@ -265,40 +265,37 @@ impl ObsidianMcpServer {
             Err(e) => return vault_err(e),
         };
 
-        let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        let mut lines: Vec<String> = content.lines().map(|l: &str| l.to_string()).collect();
         let line_count = lines.len() as i64;
 
         if p.insert_line < 0 || p.insert_line > line_count {
-            return err(format!(
+            return tool_err(format!(
                 "insert_line {} is out of range [0, {}]",
                 p.insert_line, line_count
             ));
         }
 
         let insert_at = p.insert_line as usize;
-        let new_lines: Vec<String> = p.new_str.lines().map(|l| l.to_string()).collect();
+        let new_lines: Vec<String> = p.new_str.lines().map(|l: &str| l.to_string()).collect();
 
         for (i, line) in new_lines.into_iter().enumerate() {
             lines.insert(insert_at + i, line);
         }
 
-        // Preserve trailing newline behaviour: if original ended with \n, keep it
         let mut new_content = lines.join("\n");
         if content.ends_with('\n') {
             new_content.push('\n');
         }
 
-        // Pass the already-read content as the undo snapshot to avoid
-        // a redundant re-read and its TOCTOU window inside write_file.
         match self.vault.write_file_with_undo(&p.path, content, new_content).await {
             Ok(()) => ok(format!("Inserted text at line {} in '{}'", p.insert_line, p.path)),
             Err(e) => vault_err(e),
         }
     }
 
-    /// undo_edit: revert the last edit to a file.
     #[tool(description = "Undo the last edit to a file. Only one level of undo is guaranteed per edit operation.")]
-    async fn undo_edit(&self, Parameters(p): Parameters<UndoEditParams>) -> CallToolResult {
+    async fn undo_edit(&self, params: Parameters<UndoEditParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(path = %p.path, "undo_edit");
         match self.vault.undo_file(&p.path).await {
             Ok(content) => ok(format!(
@@ -310,12 +307,12 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// get_workspace_files: list all vault files, optionally filtered.
     #[tool(description = "List all files in the vault. Optionally filter by a regex pattern applied to the file path.")]
     async fn get_workspace_files(
         &self,
-        Parameters(p): Parameters<GetWorkspaceFilesParams>,
-    ) -> CallToolResult {
+        params: Parameters<GetWorkspaceFilesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(pattern = ?p.pattern, "get_workspace_files");
 
         let files = match self.vault.list_all_files().await {
@@ -328,7 +325,7 @@ impl ObsidianMcpServer {
             Some(pat) => {
                 let re = match regex::Regex::new(pat) {
                     Ok(r) => r,
-                    Err(e) => return err(format!("Invalid regex '{}': {}", pat, e)),
+                    Err(e) => return tool_err(format!("Invalid regex '{}': {}", pat, e)),
                 };
                 files.into_iter().filter(|f| re.is_match(f)).collect()
             }
@@ -341,9 +338,9 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// search: grep-like search across vault files.
     #[tool(description = "Search for text across vault files. Returns matching lines with file path, line number, and optional context.")]
-    async fn search(&self, Parameters(p): Parameters<SearchParams>) -> CallToolResult {
+    async fn search(&self, params: Parameters<SearchParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(query = %p.query, path = ?p.path, "search");
 
         let use_regex = p.regex.unwrap_or(false);
@@ -352,7 +349,7 @@ impl ObsidianMcpServer {
         let pattern: Box<dyn Fn(&str) -> bool + Send + Sync> = if use_regex {
             let re = match regex::Regex::new(&p.query) {
                 Ok(r) => r,
-                Err(e) => return err(format!("Invalid regex '{}': {}", p.query, e)),
+                Err(e) => return tool_err(format!("Invalid regex '{}': {}", p.query, e)),
             };
             Box::new(move |s: &str| re.is_match(s))
         } else {
@@ -360,7 +357,6 @@ impl ObsidianMcpServer {
             Box::new(move |s: &str| s.contains(q.as_str()))
         };
 
-        // Get file list (optionally scoped to a subdirectory)
         let all_files = match self.vault.list_all_files().await {
             Ok(f) => f,
             Err(e) => return vault_err(e),
@@ -369,7 +365,7 @@ impl ObsidianMcpServer {
         let files: Vec<String> = match &p.path {
             None => all_files,
             Some(scope) => {
-                let scope_prefix = scope.trim_start_matches('/').trim_end_matches('/');
+                let scope_prefix: &str = scope.trim_start_matches('/').trim_end_matches('/');
                 all_files
                     .into_iter()
                     .filter(|f| {
@@ -392,8 +388,6 @@ impl ObsidianMcpServer {
             };
 
             let lines: Vec<&str> = content.lines().collect();
-            // Use a BTreeSet for O(log n) membership tests instead of a Vec
-            // with O(n) linear scans.
             let match_set: std::collections::BTreeSet<usize> = lines
                 .iter()
                 .enumerate()
@@ -407,7 +401,6 @@ impl ObsidianMcpServer {
 
             output.push(format!("=== {} ===", file_path));
 
-            // Merge overlapping context windows
             let mut shown = std::collections::BTreeSet::new();
             for &mi in &match_set {
                 let start = mi.saturating_sub(context_lines);
@@ -437,9 +430,9 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// delete: delete a file from the vault.
     #[tool(description = "Delete a file from the vault. The previous content is saved for undo_edit.")]
-    async fn delete(&self, Parameters(p): Parameters<DeleteParams>) -> CallToolResult {
+    async fn delete(&self, params: Parameters<DeleteParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(path = %p.path, "delete");
         match self.vault.delete_file(&p.path).await {
             Ok(()) => ok(format!("Deleted '{}'", p.path)),
@@ -447,9 +440,9 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// rename: move or rename a file within the vault.
     #[tool(description = "Rename or move a file within the vault. Fails if the destination already exists.")]
-    async fn rename(&self, Parameters(p): Parameters<RenameParams>) -> CallToolResult {
+    async fn rename(&self, params: Parameters<RenameParams>) -> Result<CallToolResult, McpError> {
+        let p = params.0;
         debug!(from = %p.old_path, to = %p.new_path, "rename");
         match self.vault.rename_file(&p.old_path, &p.new_path).await {
             Ok(()) => ok(format!("Renamed '{}' → '{}'", p.old_path, p.new_path)),
@@ -471,6 +464,12 @@ impl ServerHandler for ObsidianMcpServer {
             server_info: Implementation {
                 name: "obsidian-mcp-server".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
+                title: None,
+                description: Some(
+                    "MCP server for Obsidian vault file operations".into(),
+                ),
+                icons: None,
+                website_url: None,
             },
             instructions: Some(
                 "MCP server for Obsidian vault file operations. \

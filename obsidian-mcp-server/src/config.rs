@@ -40,30 +40,41 @@ impl Config {
 
     /// Validate that the vault path exists and is a directory, then canonicalize it.
     ///
+    /// All filesystem operations are performed via `tokio::fs` (non-blocking),
+    /// which is consistent with the codebase's policy of never blocking the
+    /// tokio thread pool.
+    ///
     /// Canonicalization resolves symlinks and makes the stored path absolute,
     /// so that downstream path-security checks have a stable baseline.
     ///
     /// Call this after the filesystem is ready (e.g., after PVC mount).
-    pub fn validate_vault(&mut self) -> anyhow::Result<()> {
-        if !self.vault_path.exists() {
-            anyhow::bail!(
-                "Vault path does not exist: {}",
-                self.vault_path.display()
-            );
-        }
-        if !self.vault_path.is_dir() {
+    pub async fn validate_vault(&mut self) -> anyhow::Result<()> {
+        let meta = tokio::fs::metadata(&self.vault_path).await.map_err(|e| {
+            anyhow::anyhow!(
+                "Cannot access vault path '{}': {}",
+                self.vault_path.display(),
+                e
+            )
+        })?;
+
+        if !meta.is_dir() {
             anyhow::bail!(
                 "Vault path is not a directory: {}",
                 self.vault_path.display()
             );
         }
-        self.vault_path = self.vault_path.canonicalize().map_err(|e| {
-            anyhow::anyhow!(
-                "Cannot canonicalize vault path '{}': {}",
-                self.vault_path.display(),
-                e
-            )
-        })?;
+
+        self.vault_path =
+            tokio::fs::canonicalize(&self.vault_path)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Cannot canonicalize vault path '{}': {}",
+                        self.vault_path.display(),
+                        e
+                    )
+                })?;
+
         Ok(())
     }
 }

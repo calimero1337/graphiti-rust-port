@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::{collections::VecDeque, path::{Path, PathBuf}};
 
 use dashmap::DashMap;
 
@@ -43,7 +43,7 @@ impl UndoStack {
 
     /// Pop the most recent previous state for `path`.
     /// Returns `NoUndoHistory` if the stack is empty.
-    pub fn pop(&self, path: &PathBuf) -> Result<String, VaultError> {
+    pub fn pop(&self, path: &Path) -> Result<String, VaultError> {
         let mut stack = self.entries.get_mut(path).ok_or_else(|| {
             VaultError::NoUndoHistory(path.display().to_string())
         })?;
@@ -53,7 +53,7 @@ impl UndoStack {
     }
 
     /// Returns true if there is at least one undo entry for `path`.
-    pub fn has_history(&self, path: &PathBuf) -> bool {
+    pub fn has_history(&self, path: &Path) -> bool {
         self.entries
             .get(path)
             .map_or(false, |s| !s.is_empty())

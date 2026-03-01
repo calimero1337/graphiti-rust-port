@@ -1,26 +1,26 @@
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM rust:1.82-slim AS builder
+FROM rust:slim AS builder
 
 WORKDIR /build
 
-# Cache dependencies by copying manifests first
+# Cache compiled dependency artifacts by building stubs first.
 COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src \
+    && echo 'fn main(){}' > src/main.rs \
+    && echo '' > src/lib.rs \
+    && cargo build --release --locked \
+    && rm -f  target/release/obsidian-mcp-server \
+              target/release/deps/obsidian_mcp_server* \
+              target/release/deps/libobsidian_mcp_server* \
+    && rm -rf target/release/.fingerprint/obsidian-mcp-server-*
 
-# Create stub src so cargo can resolve the dependency graph
-RUN mkdir src && echo 'fn main(){}' > src/main.rs && echo '' > src/lib.rs
-
-RUN cargo fetch --locked
-
-# Now copy real source and build
+# Now copy real source and rebuild — only our crate is recompiled.
 COPY src ./src
-RUN cargo build --release --locked
+RUN touch src/main.rs src/lib.rs \
+    && cargo build --release --locked
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
 
 # Non-root user
 RUN useradd --uid 1000 --user-group --no-create-home appuser
@@ -34,8 +34,5 @@ ENV VAULT_PATH=/vault \
     RUST_LOG=obsidian_mcp_server=info
 
 EXPOSE 8080
-
-# No HEALTHCHECK here — liveness and readiness are handled by Kubernetes
-# httpGet probes on GET /health and GET /ready respectively.
 
 ENTRYPOINT ["/usr/local/bin/obsidian-mcp-server"]

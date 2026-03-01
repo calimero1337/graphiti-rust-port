@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     // validate_vault canonicalizes vault_path so the stored path is always
     // an absolute, symlink-resolved path from this point forward.
-    config.validate_vault().map_err(|e| {
+    config.validate_vault().await.map_err(|e| {
         error!("Vault validation failed: {}", e);
         e
     })?;

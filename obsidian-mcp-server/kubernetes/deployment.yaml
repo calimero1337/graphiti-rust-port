@@ -2,11 +2,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: obsidian-mcp-server
+  namespace: claude
   labels:
     app: obsidian-mcp-server
 spec:
-  # Single replica: the vault PVC uses ReadWriteOnce and concurrent writers
-  # would create race conditions on the same files.
   replicas: 1
   selector:
     matchLabels:
@@ -16,15 +15,10 @@ spec:
       labels:
         app: obsidian-mcp-server
     spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
       containers:
         - name: obsidian-mcp-server
           image: obsidian-mcp-server:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8080
@@ -35,25 +29,14 @@ spec:
             - name: BIND_ADDR
               value: "0.0.0.0:8080"
             - name: RUST_LOG
-              valueFrom:
-                configMapKeyRef:
-                  name: obsidian-mcp-server-config
-                  key: RUST_LOG
+              value: "obsidian_mcp_server=info"
             - name: MAX_FILE_SIZE
-              valueFrom:
-                configMapKeyRef:
-                  name: obsidian-mcp-server-config
-                  key: MAX_FILE_SIZE
+              value: "10485760"
             - name: UNDO_STACK_LIMIT
-              valueFrom:
-                configMapKeyRef:
-                  name: obsidian-mcp-server-config
-                  key: UNDO_STACK_LIMIT
+              value: "100"
           volumeMounts:
             - name: vault
               mountPath: /vault
-            - name: tmp
-              mountPath: /tmp
           resources:
             requests:
               cpu: "50m"
@@ -61,33 +44,24 @@ spec:
             limits:
               cpu: "500m"
               memory: "256Mi"
-          # Liveness probe: the process is alive and serving HTTP.
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 3
             periodSeconds: 15
             timeoutSeconds: 3
             failureThreshold: 3
-          # Readiness probe: the vault directory is mounted and accessible.
           readinessProbe:
             httpGet:
               path: /ready
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 3
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
       volumes:
         - name: vault
-          persistentVolumeClaim:
-            claimName: obsidian-vault-pvc
-        - name: tmp
-          emptyDir: {}
+          hostPath:
+            path: /data/k3s-storage/obsidian-vault
+            type: Directory

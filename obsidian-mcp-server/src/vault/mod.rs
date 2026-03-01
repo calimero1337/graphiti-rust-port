@@ -26,9 +26,6 @@ pub enum VaultError {
     #[error("File too large: {size} bytes (max: {max} bytes)")]
     FileTooLarge { size: usize, max: usize },
 
-    #[error("Invalid line range: {0}")]
-    InvalidRange(String),
-
     #[error("No match found for replacement text in '{path}'")]
     NoMatch { path: String },
 
@@ -37,12 +34,6 @@ pub enum VaultError {
 
     #[error("No undo history for: {0}")]
     NoUndoHistory(String),
-
-    #[error("Invalid regex: {0}")]
-    InvalidRegex(String),
-
-    #[error("Empty old_str is not allowed")]
-    EmptyOldStr,
 
     #[error("File is not valid UTF-8: {0}")]
     NotUtf8(String),

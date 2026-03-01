@@ -18,7 +18,7 @@ path = "src/main.rs"
 rmcp = { version = "0.17", features = [
     "server",
     "macros",
-    "transport-streamable-http-server-session",
+    "transport-streamable-http-server",
 ] }
 
 # Async runtime
@@ -31,7 +31,7 @@ tower = { version = "0.5", features = ["util"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-schemars = "0.8"
+schemars = "1"
 
 # Error handling
 thiserror = "2"

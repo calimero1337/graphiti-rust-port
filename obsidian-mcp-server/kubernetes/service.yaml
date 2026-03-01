@@ -2,20 +2,19 @@ apiVersion: v1
 kind: Service
 metadata:
   name: obsidian-mcp-server
+  namespace: claude
   labels:
     app: obsidian-mcp-server
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: obsidian-mcp-server
   ports:
     - name: http
       port: 8080
       targetPort: 8080
+      nodePort: 30237
       protocol: TCP
-  # ClientIP session affinity ensures all requests from one MCP client are
-  # routed to the same pod, preserving the Mcp-Session-Id header semantics
-  # required by the Streamable HTTP transport.
   sessionAffinity: ClientIP
   sessionAffinityConfig:
     clientIP:
