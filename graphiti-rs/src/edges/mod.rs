@@ -22,7 +22,7 @@ pub use next_episode::NextEpisodeEdge;
 use std::fmt;
 
 /// A discriminant enum that wraps any of the five edge types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EdgeKind {
     Entity(EntityEdge),
     Episodic(EpisodicEdge),
@@ -75,11 +75,6 @@ impl From<NextEpisodeEdge> for EdgeKind {
 
 #[cfg(test)]
 mod tests {
-    // These tests will NOT compile until EdgeKind is defined in this module along with:
-    //   - From<EntityEdge>, From<EpisodicEdge>, From<CommunityEdge>,
-    //     From<HasEpisodeEdge>, From<NextEpisodeEdge> implementations
-    //   - std::fmt::Display implementation
-    //   - pub use re-exports for each concrete edge type
     use super::*;
 
     // ---------------------------------------------------------------------------
@@ -127,6 +122,7 @@ mod tests {
             name: "KNOWS".into(),
             fact: "Alice knows Bob".into(),
             fact_embedding: None,
+            episodes: vec![],
             valid_at: None,
             invalid_at: None,
             created_at: Utc::now(),
@@ -209,6 +205,7 @@ mod tests {
             name: "KNOWS".into(),
             fact: "test".into(),
             fact_embedding: None,
+            episodes: vec![],
             valid_at: None,
             invalid_at: None,
             created_at: Utc::now(),
