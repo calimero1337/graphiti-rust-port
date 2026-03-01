@@ -1,6 +1,30 @@
 //! EpisodicNode — represents an ingested data episode.
 
-// TODO: Implement EpisodicNode with source, content, valid_at, entity_edges
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// The source type of an episode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EpisodeType {
+    Message,
+    Json,
+    Text,
+}
+
+/// An ingested data episode (message, document, JSON record).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpisodicNode {
+    pub uuid: String,
+    pub name: String,
+    pub group_id: String,
+    pub labels: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub source: EpisodeType,
+    pub source_description: String,
+    pub content: String,
+    pub valid_at: DateTime<Utc>,
+    pub entity_edges: Vec<String>,
+}
 
 #[cfg(test)]
 mod tests {

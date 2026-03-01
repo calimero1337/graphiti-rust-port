@@ -1,6 +1,17 @@
 //! SagaNode — represents a grouping/sequence of episodes.
 
-// TODO: Implement SagaNode
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// A grouping or sequence of related episodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SagaNode {
+    pub uuid: String,
+    pub name: String,
+    pub group_id: String,
+    pub labels: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
 
 #[cfg(test)]
 mod tests {
