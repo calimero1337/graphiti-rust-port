@@ -83,7 +83,7 @@ mod tests {
 
     fn make_episodic() -> EpisodicNode {
         EpisodicNode {
-            uuid: "uuid-ep".to_string(),
+            uuid: Uuid::new_v4(),
             name: "ep".to_string(),
             group_id: "g1".to_string(),
             labels: vec![],
@@ -108,7 +108,7 @@ mod tests {
 
     fn make_saga() -> SagaNode {
         SagaNode {
-            uuid: "uuid-saga".to_string(),
+            uuid: Uuid::new_v4(),
             name: "MySaga".to_string(),
             group_id: "g1".to_string(),
             labels: vec![],

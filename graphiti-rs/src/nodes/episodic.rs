@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// The source type of an episode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14,7 +15,7 @@ pub enum EpisodeType {
 /// An ingested data episode (message, document, JSON record).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EpisodicNode {
-    pub uuid: String,
+    pub uuid: Uuid,
     pub name: String,
     pub group_id: String,
     pub labels: Vec<String>,
@@ -29,6 +30,7 @@ pub struct EpisodicNode {
 #[cfg(test)]
 mod tests {
     use super::{EpisodeType, EpisodicNode};
+    use uuid::Uuid;
 
     /// EpisodeType::Message round-trips through JSON.
     #[test]
@@ -65,7 +67,7 @@ mod tests {
     #[test]
     fn test_episodic_node_serde_roundtrip() {
         let node = EpisodicNode {
-            uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            uuid: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
             name: "test episode".to_string(),
             group_id: "group-1".to_string(),
             labels: vec!["EpisodicNode".to_string()],
@@ -99,7 +101,7 @@ mod tests {
     #[test]
     fn test_episodic_node_json_source() {
         let node = EpisodicNode {
-            uuid: "uuid-json-source".to_string(),
+            uuid: Uuid::new_v4(),
             name: "json doc".to_string(),
             group_id: "grp".to_string(),
             labels: vec![],
@@ -120,7 +122,7 @@ mod tests {
     #[test]
     fn test_episodic_node_empty_entity_edges() {
         let node = EpisodicNode {
-            uuid: "uuid-empty-edges".to_string(),
+            uuid: Uuid::new_v4(),
             name: "episode".to_string(),
             group_id: "grp".to_string(),
             labels: vec![],

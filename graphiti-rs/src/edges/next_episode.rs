@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// An edge representing a NEXT_EPISODE sequencing relationship between two episodic nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NextEpisodeEdge {
     /// Unique identifier for this edge.
     pub uuid: Uuid,
@@ -82,5 +82,18 @@ mod tests {
             created_at: Utc::now(),
         };
         assert_ne!(edge.source_node_uuid, edge.target_node_uuid);
+    }
+
+    #[test]
+    fn next_episode_edge_roundtrip() {
+        let original = NextEpisodeEdge {
+            uuid: Uuid::new_v4(),
+            source_node_uuid: Uuid::new_v4(),
+            target_node_uuid: Uuid::new_v4(),
+            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: NextEpisodeEdge = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, restored);
     }
 }

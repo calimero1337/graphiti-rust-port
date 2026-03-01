@@ -342,3 +342,236 @@ fn test_source_and_target_are_distinct_fields() {
     assert_eq!(edge.source_node_uuid, source);
     assert_eq!(edge.target_node_uuid, target);
 }
+
+// ---------------------------------------------------------------------------
+// episodes field — RED PHASE (will not compile until field is added)
+// ---------------------------------------------------------------------------
+
+/// `EntityEdge` must carry a list of episode UUIDs that sourced the fact.
+/// This test fails to compile until `episodes: Vec<Uuid>` is added to the struct.
+#[test]
+fn test_entity_edge_episodes_field_exists() {
+    let ep1 = Uuid::new_v4();
+    let ep2 = Uuid::new_v4();
+    let edge = EntityEdge {
+        episodes: vec![ep1, ep2],
+        ..minimal_edge()
+    };
+    assert_eq!(edge.episodes.len(), 2);
+    assert!(edge.episodes.contains(&ep1));
+    assert!(edge.episodes.contains(&ep2));
+}
+
+/// A freshly constructed edge with no episodes should have an empty list.
+#[test]
+fn test_entity_edge_episodes_empty_by_default() {
+    let edge = EntityEdge {
+        episodes: vec![],
+        ..minimal_edge()
+    };
+    assert!(edge.episodes.is_empty());
+}
+
+/// Episodes list must survive a serde round-trip.
+#[test]
+fn test_entity_edge_episodes_serde_roundtrip() {
+    let ep = Uuid::new_v4();
+    let original = EntityEdge {
+        episodes: vec![ep],
+        ..minimal_edge()
+    };
+
+    let json_str = serde_json::to_string(&original).expect("serialize");
+    assert!(json_str.contains("episodes"), "serialized form must include 'episodes' key");
+
+    let restored: EntityEdge = serde_json::from_str(&json_str).expect("deserialize");
+    assert_eq!(restored.episodes, vec![ep]);
+}
+
+/// episodes must deserialize correctly from JSON.
+#[test]
+fn test_entity_edge_episodes_deserialize_from_json() {
+    let ep_uuid = Uuid::new_v4();
+    let json_str = format!(
+        r#"{{
+            "uuid": "00000000-0000-0000-0000-000000000001",
+            "source_node_uuid": "00000000-0000-0000-0000-000000000002",
+            "target_node_uuid": "00000000-0000-0000-0000-000000000003",
+            "name": "KNOWS",
+            "fact": "A knows B",
+            "fact_embedding": null,
+            "valid_at": null,
+            "invalid_at": null,
+            "created_at": "2024-01-01T00:00:00Z",
+            "expired_at": null,
+            "weight": 1.0,
+            "attributes": null,
+            "group_id": null,
+            "episodes": ["{ep_uuid}"]
+        }}"#
+    );
+
+    let edge: EntityEdge = serde_json::from_str(&json_str).expect("deserialize");
+    assert_eq!(edge.episodes, vec![ep_uuid]);
+}
+
+/// An edge with multiple episodes preserves order after round-trip.
+#[test]
+fn test_entity_edge_episodes_preserves_order() {
+    let ep1 = Uuid::new_v4();
+    let ep2 = Uuid::new_v4();
+    let ep3 = Uuid::new_v4();
+
+    let edge = EntityEdge {
+        episodes: vec![ep1, ep2, ep3],
+        ..minimal_edge()
+    };
+
+    let json_str = serde_json::to_string(&edge).expect("serialize");
+    let restored: EntityEdge = serde_json::from_str(&json_str).expect("deserialize");
+
+    assert_eq!(restored.episodes, vec![ep1, ep2, ep3]);
+}
+
+// ---------------------------------------------------------------------------
+// PartialEq — RED PHASE (will not compile until PartialEq is derived)
+// ---------------------------------------------------------------------------
+
+/// Two `EntityEdge` values with the same UUIDs and data must compare equal.
+/// This test fails to compile until `#[derive(PartialEq)]` is added to the struct.
+#[test]
+fn test_entity_edge_partial_eq_equal() {
+    let uuid = Uuid::new_v4();
+    let source = Uuid::new_v4();
+    let target = Uuid::new_v4();
+    let created_at = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+
+    let a = EntityEdge {
+        uuid,
+        source_node_uuid: source,
+        target_node_uuid: target,
+        name: "KNOWS".to_string(),
+        fact: "Alice knows Bob".to_string(),
+        fact_embedding: None,
+        valid_at: None,
+        invalid_at: None,
+        created_at,
+        expired_at: None,
+        weight: 1.0,
+        attributes: serde_json::Value::Null,
+        group_id: None,
+        episodes: vec![],
+    };
+
+    let b = EntityEdge {
+        uuid,
+        source_node_uuid: source,
+        target_node_uuid: target,
+        name: "KNOWS".to_string(),
+        fact: "Alice knows Bob".to_string(),
+        fact_embedding: None,
+        valid_at: None,
+        invalid_at: None,
+        created_at,
+        expired_at: None,
+        weight: 1.0,
+        attributes: serde_json::Value::Null,
+        group_id: None,
+        episodes: vec![],
+    };
+
+    assert_eq!(a, b);
+}
+
+/// Two edges that differ only by UUID must not compare equal.
+#[test]
+fn test_entity_edge_partial_eq_different_uuid() {
+    let source = Uuid::new_v4();
+    let target = Uuid::new_v4();
+    let created_at = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+
+    let a = EntityEdge {
+        uuid: Uuid::new_v4(),
+        source_node_uuid: source,
+        target_node_uuid: target,
+        name: "KNOWS".to_string(),
+        fact: "Alice knows Bob".to_string(),
+        fact_embedding: None,
+        valid_at: None,
+        invalid_at: None,
+        created_at,
+        expired_at: None,
+        weight: 1.0,
+        attributes: serde_json::Value::Null,
+        group_id: None,
+        episodes: vec![],
+    };
+
+    let b = EntityEdge {
+        uuid: Uuid::new_v4(), // different
+        ..a.clone()
+    };
+
+    assert_ne!(a, b);
+}
+
+/// Two edges that differ only by their episodes list must not compare equal.
+#[test]
+fn test_entity_edge_partial_eq_different_episodes() {
+    let uuid = Uuid::new_v4();
+    let source = Uuid::new_v4();
+    let target = Uuid::new_v4();
+    let created_at = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+
+    let a = EntityEdge {
+        uuid,
+        source_node_uuid: source,
+        target_node_uuid: target,
+        name: "KNOWS".to_string(),
+        fact: "Alice knows Bob".to_string(),
+        fact_embedding: None,
+        valid_at: None,
+        invalid_at: None,
+        created_at,
+        expired_at: None,
+        weight: 1.0,
+        attributes: serde_json::Value::Null,
+        group_id: None,
+        episodes: vec![Uuid::new_v4()],
+    };
+
+    let b = EntityEdge {
+        episodes: vec![Uuid::new_v4()], // different episode
+        ..a.clone()
+    };
+
+    assert_ne!(a, b);
+}
+
+/// Clone produces a value that compares equal to the original.
+#[test]
+fn test_entity_edge_clone_equals_original() {
+    let uuid = Uuid::new_v4();
+    let ep = Uuid::new_v4();
+    let created_at = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+
+    let original = EntityEdge {
+        uuid,
+        source_node_uuid: Uuid::new_v4(),
+        target_node_uuid: Uuid::new_v4(),
+        name: "LIKES".to_string(),
+        fact: "Bob likes Rust".to_string(),
+        fact_embedding: Some(vec![0.5_f32]),
+        valid_at: None,
+        invalid_at: None,
+        created_at,
+        expired_at: None,
+        weight: 0.8,
+        attributes: serde_json::Value::Null,
+        group_id: Some("g1".to_string()),
+        episodes: vec![ep],
+    };
+
+    let cloned = original.clone();
+    assert_eq!(original, cloned);
+}
