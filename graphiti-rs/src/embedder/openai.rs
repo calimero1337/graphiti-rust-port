@@ -27,6 +27,7 @@ const BATCH_CHUNK_SIZE: usize = 2048;
 /// unrecognised models.
 fn model_dim(model: &str) -> usize {
     match model {
+        "text-embedding-3-small" | "text-embedding-ada-002" => 1536,
         "text-embedding-3-large" => 3072,
         _ => 1536,
     }
@@ -35,10 +36,19 @@ fn model_dim(model: &str) -> usize {
 /// Classify an [`OpenAIError`] as transient (should retry) or permanent.
 fn classify_error(err: OpenAIError) -> backoff::Error<GraphitiError> {
     let msg = err.to_string();
-    match &err {
+    match err {
         // Network-level failures (timeouts, connection refused) are transient.
         OpenAIError::Reqwest(e) if e.is_timeout() || e.is_connect() => {
             backoff::Error::transient(GraphitiError::Embedder(msg))
+        }
+        // Rate-limit (429) and server errors (5xx) are transient.
+        OpenAIError::ApiError(api_err) => {
+            let status = api_err.status.unwrap_or(0);
+            if status == 429 || status >= 500 {
+                backoff::Error::transient(GraphitiError::Embedder(msg))
+            } else {
+                backoff::Error::permanent(GraphitiError::Embedder(msg))
+            }
         }
         // Everything else (auth errors, bad requests, …) is permanent.
         _ => backoff::Error::permanent(GraphitiError::Embedder(msg)),
@@ -128,7 +138,7 @@ impl OpenAiEmbedder {
                 let embeddings: Vec<Embedding> = response
                     .data
                     .into_iter()
-                    .map(|item| item.embedding.into_iter().map(|x| x as f32).collect())
+                    .map(|item| item.embedding)
                     .collect();
 
                 Ok(embeddings)
@@ -288,6 +298,38 @@ mod tests {
         let server = MockServer::start().await;
         let embeddings = embedder(&server).embed_batch(&[]).await.unwrap();
         assert!(embeddings.is_empty());
+    }
+
+    // ── retry behaviour ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn embed_retries_on_rate_limit() {
+        let server = MockServer::start().await;
+
+        // First call returns 429 — should be retried.
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "error": {
+                    "message": "Rate limit exceeded",
+                    "type": "requests",
+                    "code": "rate_limit_exceeded",
+                }
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        // Second call succeeds.
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(make_response(1, 4)))
+            .mount(&server)
+            .await;
+
+        // The initial backoff interval is 500 ms, so this test takes ~500 ms.
+        let embedding = embedder(&server).embed("retry test").await.unwrap();
+        assert_eq!(embedding.len(), 4);
     }
 
     // ── error mapping ──────────────────────────────────────────────────────

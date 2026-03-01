@@ -27,7 +27,7 @@ reqwest = { version = "0.13", features = ["json"] }
 neo4rs = "0.8"
 
 # OpenAI
-async-openai = "0.33"
+async-openai = { version = "0.33", features = ["chat-completion", "byot"] }
 
 # Numeric / Vector
 ndarray = "0.17"
