@@ -35,6 +35,29 @@ impl Default for CacheConfig {
     }
 }
 
+// ── Backoff configuration ─────────────────────────────────────────────────────
+
+/// Configuration for exponential-backoff retry.
+#[derive(Debug, Clone)]
+pub struct BackoffConfig {
+    /// Initial delay before the first retry.
+    pub initial_interval: Duration,
+    /// Maximum delay between retries.
+    pub max_interval: Duration,
+    /// Maximum total time to keep retrying before giving up.
+    pub max_elapsed_time: Duration,
+}
+
+impl Default for BackoffConfig {
+    fn default() -> Self {
+        Self {
+            initial_interval: Duration::from_millis(500),
+            max_interval: Duration::from_secs(60),
+            max_elapsed_time: Duration::from_secs(300),
+        }
+    }
+}
+
 // ── Client struct ─────────────────────────────────────────────────────────────
 
 /// OpenAI LLM client implementing [`LlmClient`].
@@ -43,7 +66,8 @@ pub struct OpenAiClient {
     model: String,
     temperature: f32,
     max_tokens: u32,
-    /// Keyed by `{type_name}:{md5(model + messages)}` → serialised response text.
+    backoff_config: BackoffConfig,
+    /// Keyed by `{type_name}:{md5(model + temperature + max_tokens + messages)}` → serialised response text.
     cache: Cache<String, String>,
 }
 
@@ -72,6 +96,7 @@ impl OpenAiClient {
             model: model.into(),
             temperature: 0.0,
             max_tokens: 8_192,
+            backoff_config: BackoffConfig::default(),
             cache,
         }
     }
@@ -88,14 +113,25 @@ impl OpenAiClient {
         self
     }
 
+    /// Override the retry backoff configuration (default: 500 ms initial, 60 s max, 5 min total).
+    pub fn with_backoff_config(mut self, backoff_config: BackoffConfig) -> Self {
+        self.backoff_config = backoff_config;
+        self
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Compute an MD5 cache key from model + message sequence.
+    /// Compute an MD5 cache key from model, temperature, max_tokens, and message sequence.
+    ///
+    /// Including `temperature` and `max_tokens` prevents cache collisions between
+    /// requests that share the same messages but differ in sampling parameters.
     fn cache_key(&self, prefix: &str, messages: &[Message]) -> String {
         use md5::{Digest, Md5};
         let mut h = Md5::new();
         h.update(prefix.as_bytes());
         h.update(self.model.as_bytes());
+        h.update(self.temperature.to_bits().to_le_bytes());
+        h.update(self.max_tokens.to_le_bytes());
         for m in messages {
             let role = role_str(&m.role);
             h.update(role.as_bytes());
@@ -122,9 +158,9 @@ impl OpenAiClient {
     /// Retries on [`LlmError::RateLimit`] (HTTP 429) and transient 5xx errors.
     async fn call_with_retry(&self, request: serde_json::Value) -> Result<serde_json::Value> {
         let backoff = ExponentialBackoffBuilder::new()
-            .with_initial_interval(Duration::from_millis(500))
-            .with_max_interval(Duration::from_secs(60))
-            .with_max_elapsed_time(Some(Duration::from_secs(300)))
+            .with_initial_interval(self.backoff_config.initial_interval)
+            .with_max_interval(self.backoff_config.max_interval)
+            .with_max_elapsed_time(Some(self.backoff_config.max_elapsed_time))
             .build();
 
         backoff::future::retry(backoff, || async {
@@ -173,12 +209,13 @@ impl LlmClient for OpenAiClient {
             return Ok(cached);
         }
 
-        let request = json!({
+        let max_tokens_key = max_tokens_param(&self.model);
+        let mut request = json!({
             "model": self.model,
             "messages": Self::messages_to_json(messages),
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
         });
+        request[max_tokens_key] = json!(self.max_tokens);
 
         let response = self.call_with_retry(request).await?;
         let content = Self::extract_content(&response)?;
@@ -203,14 +240,23 @@ impl LlmClient for OpenAiClient {
         }
 
         // Build the JSON schema from T via schemars.
-        let schema = schemars::schema_for!(T);
-        let schema_value = serde_json::to_value(&schema)?;
+        // Use the method directly instead of the schema_for! macro so it works
+        // with generic type parameters.
+        let schema = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+        let mut schema_value = serde_json::to_value(&schema)?;
 
-        let request = json!({
+        // OpenAI's strict mode requires:
+        //   1. `additionalProperties: false` on every object schema in the tree.
+        //   2. All property keys listed in `required` (Option<_> fields are omitted
+        //      by schemars but must be present for the API to accept the schema).
+        add_no_additional_properties(&mut schema_value);
+        ensure_all_properties_required(&mut schema_value);
+
+        let max_tokens_key = max_tokens_param(&self.model);
+        let mut request = json!({
             "model": self.model,
             "messages": Self::messages_to_json(messages),
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -220,6 +266,7 @@ impl LlmClient for OpenAiClient {
                 }
             }
         });
+        request[max_tokens_key] = json!(self.max_tokens);
 
         let response = self.call_with_retry(request).await?;
         let content = Self::extract_content(&response)?;
@@ -240,23 +287,116 @@ fn role_str(role: &Role) -> &'static str {
     }
 }
 
+/// Recursively add `"additionalProperties": false` to every JSON object schema
+/// that has a `"properties"` field.
+///
+/// Always overwrites any pre-existing `additionalProperties` value because
+/// OpenAI strict mode requires it to be exactly `false` — a pre-existing
+/// `true` (e.g. from a map-like `schemars` type) would cause an API rejection.
+fn add_no_additional_properties(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(obj) => {
+            if obj.contains_key("properties") {
+                obj.insert(
+                    "additionalProperties".to_string(),
+                    serde_json::Value::Bool(false),
+                );
+            }
+            for v in obj.values_mut() {
+                add_no_additional_properties(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                add_no_additional_properties(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursively ensure every object schema has `"required"` equal to the full
+/// list of its `"properties"` keys.
+///
+/// OpenAI strict mode requires BOTH `additionalProperties: false` AND all
+/// properties listed in `required`.  `schemars` omits `Option<_>` fields from
+/// `required`, which causes the OpenAI API to reject the schema at runtime.
+fn ensure_all_properties_required(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(obj) => {
+            if let Some(props) = obj.get("properties") {
+                if let Some(props_map) = props.as_object() {
+                    let keys: Vec<serde_json::Value> = props_map
+                        .keys()
+                        .map(|k| serde_json::Value::String(k.clone()))
+                        .collect();
+                    obj.insert("required".to_string(), serde_json::Value::Array(keys));
+                }
+            }
+            // Recurse into nested schemas (including $defs, allOf, etc.)
+            for v in obj.values_mut() {
+                ensure_all_properties_required(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                ensure_all_properties_required(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Return the correct token-limit parameter name for the given model.
+///
+/// OpenAI deprecated `"max_tokens"` for newer models (gpt-4o, gpt-4-turbo,
+/// o1, o3 and later families); those models expect `"max_completion_tokens"`.
+/// The old field may be silently ignored, causing unbounded output.
+fn max_tokens_param(model: &str) -> &'static str {
+    if model.contains("gpt-4o")
+        || model.contains("gpt-4-turbo")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+    {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    }
+}
+
 /// Map an [`async_openai::error::OpenAIError`] to our [`LlmError`] domain type.
+///
+/// `async_openai::error::ApiError` does not carry an HTTP status field.
+/// Instead, we infer the error class from the `code` field for known values.
+/// Server errors (5xx) are wrapped by async-openai as `ApiError` with both
+/// `code` and `r#type` set to `None`, so we assign them `status = 500` to
+/// allow the caller's retry logic to detect them.
 fn map_openai_error(err: async_openai::error::OpenAIError) -> LlmError {
     use async_openai::error::OpenAIError;
 
     match err {
-        OpenAIError::ApiError(api_err) => {
-            // `ApiError.status` is `Option<u16>` in async-openai ≥ 0.24.
-            let status = api_err.status.unwrap_or(0);
-            match status {
-                401 | 403 => LlmError::Authentication,
-                429 => LlmError::RateLimit,
-                other => LlmError::Api {
-                    status: other,
-                    message: api_err.message,
-                },
+        OpenAIError::ApiError(api_err) => match api_err.code.as_deref() {
+            Some("invalid_api_key") => LlmError::Authentication,
+            Some("rate_limit_exceeded") => LlmError::RateLimit,
+            _ => {
+                // async-openai formats 5xx errors as ApiError with code=None and
+                // type=None. Assign status=500 so callers can treat them as transient.
+                // TODO: revisit once async-openai exposes HTTP status on ApiError
+                // directly — an API error with a genuinely unknown code/type would
+                // also land here and be misclassified as a transient 5xx.
+                let status = if api_err.code.is_none() && api_err.r#type.is_none() {
+                    500
+                } else {
+                    0
+                };
+                LlmError::Api { status, message: api_err.message }
             }
-        }
+        },
+        OpenAIError::Reqwest(e) => LlmError::Api {
+            status: e.status().map(|s| s.as_u16()).unwrap_or(0),
+            message: e.to_string(),
+        },
         other => LlmError::Api {
             status: 0,
             message: other.to_string(),
@@ -286,6 +426,11 @@ mod tests {
             model: "gpt-4o".to_string(),
             temperature: 0.0,
             max_tokens: 512,
+            backoff_config: BackoffConfig {
+                initial_interval: Duration::from_millis(50),
+                max_interval: Duration::from_secs(1),
+                max_elapsed_time: Duration::from_secs(10),
+            },
             cache: Cache::builder()
                 .max_capacity(100)
                 .time_to_live(Duration::from_secs(60))
@@ -401,7 +546,9 @@ mod tests {
     async fn test_generate_retries_on_rate_limit() {
         let server = MockServer::start().await;
 
-        // First call returns 429, second call succeeds.
+        // First call returns 429; second call succeeds.
+        // async-openai handles 429 retry internally, so the test client's
+        // own backoff may not be exercised, but the net result should succeed.
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(429).set_body_json(json!({
@@ -424,10 +571,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Use a very short initial backoff so the test doesn't take forever.
-        // We can't easily configure the client's backoff from outside, so we
-        // rely on the default (500 ms) and accept the test is slightly slow.
-        // In practice, consider exposing BackoffConfig.
         let client = client_for(&server.uri());
         let msgs = user_messages("Hello after rate limit");
         let result = client.generate(&msgs).await.expect("should succeed after retry");
@@ -450,7 +593,7 @@ mod tests {
             name: "Alice".to_string(),
             age: 30,
         })
-        .unwrap();
+        .expect("Person serialization is infallible");
 
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -479,7 +622,7 @@ mod tests {
             name: "Bob".to_string(),
             age: 25,
         })
-        .unwrap();
+        .expect("Person serialization is infallible");
 
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -521,5 +664,203 @@ mod tests {
             client.cache_key("text", &msgs),
             client.cache_key("structured", &msgs)
         );
+    }
+
+    #[test]
+    fn test_cache_key_differs_by_temperature() {
+        let client_a = OpenAiClient::new("key", "gpt-4o", CacheConfig::default());
+        let client_b =
+            OpenAiClient::new("key", "gpt-4o", CacheConfig::default()).with_temperature(0.7);
+        let msgs = user_messages("hello");
+        assert_ne!(
+            client_a.cache_key("text", &msgs),
+            client_b.cache_key("text", &msgs),
+        );
+    }
+
+    #[test]
+    fn test_cache_key_differs_by_max_tokens() {
+        let client_a = OpenAiClient::new("key", "gpt-4o", CacheConfig::default());
+        let client_b =
+            OpenAiClient::new("key", "gpt-4o", CacheConfig::default()).with_max_tokens(100);
+        let msgs = user_messages("hello");
+        assert_ne!(
+            client_a.cache_key("text", &msgs),
+            client_b.cache_key("text", &msgs),
+        );
+    }
+
+    // ── schema helpers ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_add_no_additional_properties_adds_field() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            }
+        });
+        add_no_additional_properties(&mut schema);
+        assert_eq!(schema["additionalProperties"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_add_no_additional_properties_overwrites_existing_true() {
+        // For OpenAI strict mode, additionalProperties MUST be false.
+        // Even a pre-existing `true` must be overwritten to avoid API rejection.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+        });
+        add_no_additional_properties(&mut schema);
+        assert_eq!(schema["additionalProperties"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_add_no_additional_properties_recurses_into_nested() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "object",
+                    "properties": {
+                        "street": { "type": "string" }
+                    }
+                }
+            }
+        });
+        add_no_additional_properties(&mut schema);
+        assert_eq!(schema["additionalProperties"], serde_json::Value::Bool(false));
+        assert_eq!(
+            schema["properties"]["address"]["additionalProperties"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    // ── ensure_all_properties_required() ─────────────────────────────────────
+
+    #[test]
+    fn test_ensure_all_properties_required_sets_required() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age": { "type": "integer" }
+            }
+        });
+        ensure_all_properties_required(&mut schema);
+        let required = schema["required"].as_array().expect("required should be an array");
+        let mut keys: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["age", "name"]);
+    }
+
+    #[test]
+    fn test_ensure_all_properties_required_overwrites_existing_partial_required() {
+        // schemars omits Option<_> fields from required; we must overwrite.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "nickname": { "type": ["string", "null"] }
+            },
+            "required": ["name"]
+        });
+        ensure_all_properties_required(&mut schema);
+        let required = schema["required"].as_array().expect("required should be an array");
+        let mut keys: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["name", "nickname"]);
+    }
+
+    #[test]
+    fn test_ensure_all_properties_required_recurses_into_nested() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "object",
+                    "properties": {
+                        "street": { "type": "string" },
+                        "zip": { "type": ["string", "null"] }
+                    }
+                }
+            }
+        });
+        ensure_all_properties_required(&mut schema);
+        let inner_required = schema["properties"]["address"]["required"]
+            .as_array()
+            .expect("nested required should be an array");
+        let mut keys: Vec<&str> = inner_required.iter().map(|v| v.as_str().unwrap()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["street", "zip"]);
+    }
+
+    // ── max_tokens_param() ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_max_tokens_param_gpt4o_uses_completion_tokens() {
+        assert_eq!(max_tokens_param("gpt-4o"), "max_completion_tokens");
+        assert_eq!(max_tokens_param("gpt-4o-mini"), "max_completion_tokens");
+    }
+
+    #[test]
+    fn test_max_tokens_param_gpt4_turbo_uses_completion_tokens() {
+        assert_eq!(max_tokens_param("gpt-4-turbo"), "max_completion_tokens");
+        assert_eq!(max_tokens_param("gpt-4-turbo-preview"), "max_completion_tokens");
+    }
+
+    #[test]
+    fn test_max_tokens_param_o_series_uses_completion_tokens() {
+        assert_eq!(max_tokens_param("o1"), "max_completion_tokens");
+        assert_eq!(max_tokens_param("o1-mini"), "max_completion_tokens");
+        assert_eq!(max_tokens_param("o3"), "max_completion_tokens");
+        assert_eq!(max_tokens_param("o4-mini"), "max_completion_tokens");
+    }
+
+    #[test]
+    fn test_max_tokens_param_legacy_uses_max_tokens() {
+        assert_eq!(max_tokens_param("gpt-3.5-turbo"), "max_tokens");
+        assert_eq!(max_tokens_param("gpt-4"), "max_tokens");
+    }
+
+    // ── error mapping ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_map_openai_error_rate_limit() {
+        let api_err = async_openai::error::ApiError {
+            message: "rate limited".to_string(),
+            r#type: Some("requests".to_string()),
+            param: None,
+            code: Some("rate_limit_exceeded".to_string()),
+        };
+        let err = map_openai_error(async_openai::error::OpenAIError::ApiError(api_err));
+        assert!(matches!(err, LlmError::RateLimit));
+    }
+
+    #[test]
+    fn test_map_openai_error_auth() {
+        let api_err = async_openai::error::ApiError {
+            message: "invalid key".to_string(),
+            r#type: Some("invalid_request_error".to_string()),
+            param: None,
+            code: Some("invalid_api_key".to_string()),
+        };
+        let err = map_openai_error(async_openai::error::OpenAIError::ApiError(api_err));
+        assert!(matches!(err, LlmError::Authentication));
+    }
+
+    #[test]
+    fn test_map_openai_error_server_error_gets_status_500() {
+        // async-openai wraps 5xx with code=None, type=None
+        let api_err = async_openai::error::ApiError {
+            message: "Internal Server Error".to_string(),
+            r#type: None,
+            param: None,
+            code: None,
+        };
+        let err = map_openai_error(async_openai::error::OpenAIError::ApiError(api_err));
+        assert!(matches!(err, LlmError::Api { status: 500, .. }));
     }
 }

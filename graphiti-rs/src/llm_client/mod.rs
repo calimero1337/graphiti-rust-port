@@ -1,15 +1,15 @@
 //! LLM client abstraction.
 //!
-//! # Implementations
-//! - [`openai::OpenAiClient`] — OpenAI GPT-4o (and variants) via `async-openai`.
-
-pub mod openai;
-//!
 //! Mirrors the Python `graphiti_core.llm_client` module.
 //! Provides a trait for calling language models with structured output support.
 //!
+//! # Implementations
+//! - [`openai::OpenAiClient`] — OpenAI GPT-4o (and variants) via `async-openai`.
+//!
 //! Phase 1 target: OpenAI GPT-4o via `async-openai` with `schemars`-generated JSON schemas.
 //! Phase 2: Anthropic Claude, Google Gemini, Groq, Azure OpenAI.
+
+pub mod openai;
 
 use crate::errors::Result;
 use serde::de::DeserializeOwned;
